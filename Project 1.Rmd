@@ -1,0 +1,953 @@
+---
+title: "Assignment1_BTC1877H"
+author: "Leen Madani"
+date: "2023-09-19"
+output: pdf_document
+---
+
+
+# Question 1 
+
+In this question, our objective is to construct a mapping linear regression model that bridges the gap between two instruments measuring the quality of life and health-related outcomes. Specifically, we aim to establish a connection between the UCLA-PCI (University of California, Los Angeles Prostate Cancer Index), a descriptive instrument assessing the Health-Related Quality of Life in prostate cancer patients, and the PORPUS (Patient-Oriented Prostate Utility Scale) utility instrument.
+
+Utility scores, which range from 1 (indicating perfect health) to 0 (representing deceased), are critical for conducting cost-effectiveness analyses. These scores can even assume values less than 0, indicating health states worse than being "dead." Obtaining utility scores typically involves using specific instruments like EQ5D or HUI. However, in some scenarios, data from such instruments may not be available, whereas data from other quality of life instruments that don't directly yield utility scores might be accessible.
+
+Our goal is to create a "map" or relationship that allows us to estimate utility scores from the UCLA-PCI descriptive instrument when PORPUS data is unavailable. The dataset we will utilize, named "study3.csv," comprises various variables, including components of the UCLA-PCI and the final utility scores obtained from PORPUS-U.
+
+Through this analysis, we will establish a model that provides valuable insights into the relationship between these instruments, enabling us to derive utility scores when needed.
+
+
+
+```{r task1, include = FALSE}
+setwd("C:/Users/Leen/Desktop/Mbiotech/BTC1877")
+
+# Read dataset into a dataframe using read.csv function and save the dataset as study3
+study3 <- read.csv("study3.csv")
+
+# Take a deeper look at the dataset's structure to understand its components using glimpse()
+library(dplyr)
+glimpse(study3)
+
+# Select the variables that we are interested in 
+data1 <- dplyr::select(study3, PatientID, age, bowbo, bowfn, urinbo, urinfn, sexbo, sexfn, charlsr, porpusu)
+
+
+# Dealing with missing values 
+
+any(is.na(data1)) # is there any missing values portrayed as NA?   
+complete.cases(data1)  # double check by using complete.cases() function to check whether each row is complete ( TRUE is complete with no NAs)
+
+# However, NAs are sometimes present in a different format, like empty space, dot, 99, etc.. Let's investigate.
+
+table(data1$age)
+table(data1$bowbo)
+table(data1$bowfn)
+table(data1$sexbo)
+table(data1$urinbo)
+table(data1$urinfn)
+table(data1$sexfn)
+table(data1$charlsr)
+
+# It seems like missing values are indicated by a "." 
+
+# Lets replace all "." by NAs
+data1[data1 == "."] <- NA
+
+# Now let's see how many NAs in our dataset
+sum(is.na(data1)) # 146
+
+# Let's count the missing observations for each variable 
+colSums(is.na(data1))
+
+# Let's visualize our missing data using nania package
+#install.packages("naniar")
+library(naniar)
+missing_data <- vis_miss(data1) 
+
+# no variables have level of missingness greater than 30%, so will keep all variables.
+
+
+# Filter rows where any variable contains missing values
+observations_missing <- data1 %>%
+  filter(if_any(everything(), ~is.na(.)))
+
+# 86 observations out of 676 have missing values (or 12.7%)
+
+# Let's again count the missing observations for each variable 
+colSums(is.na(data1))
+
+
+
+
+# From the glimpse output above, we see that variables such as age, bowbo, etc.. are characters. Let's convert them to numerical variables to analyze their descriptive statistics better (except comobirdity index):
+
+data1 <- data1  %>%
+  mutate(
+    age = as.numeric(age),
+    bowbo = as.numeric(bowbo),
+    bowfn = as.numeric(bowfn),
+    urinbo = as.numeric(urinbo),
+    urinfn = as.numeric(urinfn),
+    sexbo = as.numeric(sexbo),
+    sexfn = as.numeric(sexfn),
+    porpusu = as.numeric(porpusu), 
+  )
+
+# Method 1: Complete case
+data1_clean <- data1[complete.cases(data1), ]
+
+# Method2: Multiple imputation
+#install.packages("mice")
+library(mice)
+set.seed(123)
+# Perform multiple imputation
+imp <- mice(data1, method = "mean", m = 5)
+
+#Obtain imputed datset 
+imputed_datasets <- lapply(1:5, function(i) complete(imp, i))
+
+
+# Perform sensitivity analysis to check which method is better:
+# Calculate means from the complete case dataset
+mean_complete_case <- colMeans(data1_clean)
+
+# Calculate means from each imputed dataset
+mean_imputed <- lapply(imputed_datasets, function(imputed_data) colMeans(imputed_data, na.rm = TRUE))
+
+# Compare means across imputations and the complete case dataset
+for (i in 1:5) {
+  cat("Imputed Dataset", i, "vs. Complete Case:\n")
+  cat("Variable   Complete Case   Imputed Dataset\n")
+  for (var in names(data1)) {
+    cat(var, "  ", mean_complete_case[var], "  ", mean_imputed[[i]][var], "\n")
+  }
+  cat("\n")
+}
+
+
+# Is there a staistically signfiicant difference between means in cc and mi?
+# Initialize a list to store the results
+t_test_results <- list()
+
+# Loop over variables
+for (var in names(data1_clean)) {
+  # Initialize a list to store results for the current variable
+  var_results <- list()
+  
+  # Loop over imputed datasets (1 to 5)
+  for (i in 1:5) {
+    # Extract the variable from the complete case dataset
+    complete_case_var <- data1_clean[[var]]
+    
+    # Extract the variable from the imputed dataset
+    imputed_var <- imputed_datasets[[i]][[var]]
+    
+    # Perform an independent samples t-test
+    t_test_result <- t.test(complete_case_var, imputed_var)
+    
+    # Store the results in the variable-specific list
+    var_results[[paste("Imputed Dataset", i)]] <- t_test_result
+  }
+  
+  # Store the variable-specific results in the overall results list
+  t_test_results[[var]] <- var_results
+}
+
+t_test_results
+
+# There is no statsitcally significant difference. So, I will proceed with complete case. 
+
+
+# For knitting to a PDF, i had to run this code: tinytex::install_tinytex(), which still did not work. So, I ran this update.packages(ask = FALSE, checkBuilt = TRUE) and tinytex::tlmgr_update()
+
+
+```
+
+
+
+
+```{r task2, include = FALSE}
+
+# Create a new variable that categorizes the comorbidity index into 0, 1, 2, 3+
+data1_task2 <- data1_clean %>% 
+  mutate(charlsr_categ = factor(case_when(
+    charlsr == 0 ~ "0", 
+    charlsr == 1 ~ "1", 
+    charlsr == 2 ~ "2", 
+    charlsr >= 3 ~ "3+"), levels = c("0", "1", "2", "3+")))
+
+glimpse(data1_task2)  # this is the dataset we will work with throughout question 1
+
+```
+
+# Task 1 & 2: 
+
+## Dataset Description and Data Preparation
+
+Dataset Description and Data Preparation
+
+The dataset used for this analysis, known as "study3," originally consisted of 676 rows and 42 columns, encompassing various aspects of patients' health and well-being. However, to align with the specific objectives outlined in the instructions, a subset of variables was selected for analysis: age, bowel and urinary function, sexual health, comorbidity index, and the utility score PORPUS
+
+To prepare the dataset for analysis, the following key steps were undertaken:
+
+**1. Handling Missing Data:** It was observed that missing values were represented by the character "." in the dataset. To address this, all instances of "." were replaced with "NA" to signify missing data.
+
+**2. Filtering for Complete Cases:** To ensure the reliability of the dataset, rows with missing values in any of the selected variables were removed. It's noteworthy that 86 observations (equivalent to 12.7% of the dataset) had missing values. Importantly, each of the selected variables had less than 30% missingness, with the maximum being 8%. This justified the inclusion of all selected variables in the analysis.
+
+**3. Data Type Conversion:** All variables, except for the comorbidity index, were converted from their original character data type to numeric data types. This transformation enhanced the dataset's analytical capabilities, enabling numerical calculations and statistical tests on these variables.
+
+**4. Comorbidity Index Categorization:** A new variable was introduced to categorize the comorbidity index into four groups: 0, 1, 2, and 3+. This categorization facilitated the interpretation of findings related to comorbidity and allowed for exploration of its relationships with other selected variables.
+
+**5. Multiple Imputation and Statistical Testing: ** In addition to the complete case analysis, multiple imputation was employed to address missing data. Five imputed datasets were generated, and subsequent t-tests were conducted to assess whether statistically significant differences existed between the means of imputed and complete case datasets for each selected variable. Importantly, no statistically significant differences were observed, supporting the decision to proceed with the complete case analysis.
+
+```{r task1_missingdata_plot, echo = FALSE,  fig.cap = "Visualization of the Amount of Missing Data."}
+
+missing_data
+
+```    
+
+**6. Visualizing Missing Data:** As an additional step, a visualization plot (figure 1) was generated to provide a visual representation of missing data distribution across the selected variables. This plot aided in assessing the extent of missing values in the chosen variables, and aided in the process of handling missing data.
+
+
+Finally, these data preparation steps resulted in a refined dataset consisting of 590 rows and 11 columns, encompassing the specific variables of interest: age, bowel and urinary function, sexual health, comorbidity index, and the utility score PORPUS. This streamlined dataset is now well-suited for in-depth analysis and exploration of the relationships between these selected variables. 
+
+
+
+```{r task3, include = FALSE}
+# Explore and describe the data, focusing only on the variables of interest (excluding patient ID) using the proper descriptive statistics (in Tables) and graphical methods. Generate one plot per variable, choosing the most appropriate plot. Discuss the results.
+
+
+# install.packages("funModeling") does not work because it is no longer found in R. Therefore, download it remotely from github itself using this code below:
+#install.packages("devtools")
+#devtools::install_github("pablo14/funModeling")
+
+# Load necessary packages for descriptive stats and EDA
+library(funModeling)
+library(tidyverse)
+library(Hmisc)
+
+# The following basic_eda function is adapted from datascienceheroes.com
+basic_eda <- function(data)
+{
+ # Remove 'PatientID' column
+  data <- data[, colnames(data) != "PatientID"]
+  
+  glimpse(data)
+  print(status(data))
+  print(profiling_num(data))
+  plot_num(data, path_out = ".") # to export plot as jpeg to current directory, add path_out = "."
+  describe(data)
+}
+
+# glimpse() function shows the no. of rows & columns, each column with it values, and the data type.
+# status() function returns a table with overall metrics about data types, zeros, infinite no., and NAs..
+# profiling_num() runs for all numerical/integer variables. Shows all the descriptive statistics(i.e.mean, std dev, variance, percentiles, skewness of the distribution, kurotsis, IQR, range_98, and range_80 (range_98 is the range where 98% of the values are, range_80 is range where 80% of values are.
+# the plot_num() function creates a plot showing the distribution of each variable; the default value of the bins is set to 10.
+# describe() function analyzes numerical and categorical at the same time; in this case, charlsr_catog are categorical and all other variables are numerical. We can detect outliers by analyzing the lowest and highest values of numerical variables and we can see the count/frequency of the categorical variables clearly.
+
+
+basic_eda(data1_task2)
+
+
+# Frequency distribtion for categorical variable 
+freq_plot <- freq(data1_task2$charlsr_categ) 
+
+# CHeck min and max by using summary() function
+summary(data1_task2)
+
+```
+
+# Task 2 
+
+![Visualization of the Nine Continuous Variables. "Age" represents patients' age in years. "Bowel Bother" (bowbo) and "Bowel Function" (bowfn) assess bowel discomfort and functionality on scales from 0 to 100, respectively, where higher values indicate improved function and less bother. "Urine Bother" (urinbo) and "Urine Function" (urinfn) measure urinary discomfort and functionality, with lower scores indicating less bother and better function. "Sexual Bother" (sexbo) and "Sexual Function" (sexfn) gauge sexual discomfort and functionality, with lower scores indicating reduced bother and higher functionality. The "Comorbidity Index" (charlsr) quantifies overall health comorbidity, while "PORPUS Utility" (porpusu) evaluates overall health and quality of life on a scale from 0 to 1, where higher values signify better well-being. Each histogram represents the values of the specific variables along the x-axis, with a default bin size of 10. The y-axis denotes the counts or frequency of occurrences. The dataset consists of 590 patients after dealing with missing entries. ](C:/Users/Leen/Desktop/Mbiotech/BTC1877/histograms.png)
+
+
+
+```{r task3_output, fig.cap = "Frequency Distribution of Comorbidity Index. The comorbidity index has been categorized into four groups: 0, 1, 2, and 3+. Each group represents varying degrees of comorbidity, with '0' indicating no comorbid conditions and '3+' suggesting the presence of three or more comorbid conditions.", echo = FALSE}
+# Create the histogram
+ggplot(freq_plot, aes(x = var, y = frequency, fill = var)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(percentage, "%")), vjust = -0.5) +
+  labs(x = "Comorbidity Index", y = "Frequency") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() + 
+  theme(legend.position = "none")  # Remove the legend on the right
+
+```
+
+
+
+```{r table1, echo=FALSE}
+library(knitr)
+
+data1_task2 <- data1_task2 %>%
+  mutate(charlsr = as.factor(charlsr)) 
+
+
+table1 <- profiling_num(data1_task2)
+
+# remove the pnr row because profiling_num will regard it as cont.
+table1 <- table1[table1$variable != "PatientID", ]
+
+#profiling_num calculates multiple stuff, like ketosis, 98% range, etc.. so i want to select only those that i care about
+table1_clean <- table1 %>%
+  select(
+    Variable = variable,
+    Mean = mean,
+    `Standard Deviation` = std_dev,
+    `Variation Coef.` = variation_coef,
+    `1st Quartile` = p_25,
+    Median = p_50,
+    `3rd Quartile` = p_75,
+    Skewness = skewness
+  ) %>% 
+  mutate(
+    Variable = case_when(
+      Variable == "age" ~ "Age",
+      Variable == "bowbo" ~ "Bowel Bother",
+      Variable == "bowfn" ~ "Bowel Function",
+      Variable == "urinbo" ~ "Urine Bother",
+      Variable == "urinfn" ~ "Urine Function",
+      Variable == "sexbo" ~ "Sex Bother",
+      Variable == "sexfn" ~ "Sex Function",
+      Variable == "porpusu" ~ "PORPUS",
+      TRUE ~ Variable
+    ),
+    Mean = round(Mean, 2),
+    `Standard Deviation` = round(`Standard Deviation`, 2),
+    `Variation Coef.` = round(`Variation Coef.`, 2),
+    `1st Quartile` = round(`1st Quartile`, 2),
+    Median = round(Median, 2),
+    `3rd Quartile` = round(`3rd Quartile`, 2),
+    Skewness = round(Skewness, 2)
+  )
+
+
+# or i could add the descriptive stats myself by calculating each using basic R functions
+ #desc_stats <- data1_task2 %>%
+ # summarise(
+  #  Mean = round(mean(., 2)),
+ #   `Standard Deviation` = round(sd(., 2)),
+ #   `Variation Coefficient` = round(sd(.) / mean(.), 2),
+ #   `1st Quartile` = round(quantile(., 0.25), 2),
+ #   `Median` = round(median(.), 2),
+ #   `3rd Quartile` = round(quantile(., 0.75), 2),
+ # )
+
+
+# Remove row numbering
+rownames(table1_clean) <- NULL
+
+# Use kablr from knitr package to create a clean table from out dataframe table_clean
+kable(table1_clean, caption = "Descriptive Statistics for Key Variables")
+
+
+```
+
+## Descriptive Statistics Insights
+
+#### **Age:**
+
+The participants in the study have an average age of approximately 72 years, with a minumum age of 43 years. This suggests that the sample consists mainly of older individuals. The standard deviation of around 8 indicates that the age values are relatively concentrated around the mean, with relatively low variability. The variation coefficient of 0.11 further supports this observation, indicating low variability relative to the mean. When looking at quartiles, we find that 25% of the participants are aged 67 or below, while 50% are aged 73 or below, and 75% are aged 77 or below. The slight negative skewness (-0.32) of the age distribution suggests a slightly longer tail on the left side, meaning that there are relatively fewer participants with ages significantly below the mean.It's important to note that there are 9 missing entries in the age variable.
+
+#### **Bowel Bother:**
+
+On average, participants reported a Bowel Bother score of approximately 83, with higher values indicating more bother related to bowel function. The standard deviation of about 25 suggests considerable variability in Bowel Bother scores, indicating that responses vary widely. The variation coefficient of 0.31 indicates moderate variability relative to the mean. When examining quartiles, we find that scores range from a minimum of 75 (first quartile) to a maximum of 100 (third quartile), with some participants reporting the maximum bother score of 100. The distribution is negatively skewed (-1.42), indicating that more participants reported higher Bowel Bother scores, with a tail on the left side of the distribution. There are 3 missing entries in the Bowel Bother variable.
+
+
+#### **Bowel Function:**
+
+Participants have an average Bowel Function score of approximately 85, implying better function. However, these scores exhibit moderate variability, with a standard deviation of about 16 and a variation coefficient of 0.19, suggesting moderate variability relative to the mean. Quartile analysis positions the first quartile at 75, the median at 91.71, and the third quartile at 100. The distribution is negatively skewed (-1.33), indicating that more participants have higher scores, reflecting better bowel function. Like Bowel Bother, there are 3 missing entries in the Bowel Function variable.
+
+
+#### **Urine Bother:**
+
+The average Urine Bother score is approximately 78, with higher values indicating more bother. Scores display moderate variability, with a standard deviation of around 27 and a variation coefficient of 0.34, signifying moderate variability relative to the mean. Quartile analysis demonstrates scores ranging from 75 (first quartile) to 100 (third quartile), with some participants reporting the maximum bother score. The distribution is negatively skewed (-1.13), suggesting that more participants reported higher scores, indicating more bother.There are 2 missing entries in the Urine Bother variable.
+
+#### **Urine Function:**
+
+Urine Function: Participants have an average Urine Function score of approximately 79, indicating better function. Scores vary moderately, with a standard deviation of about 23 and a variation coefficient of 0.29, indicating moderate variability relative to the mean. Quartile analysis positions the first quartile at 65.42, the median at 85.50, and the third quartile at 100. The distribution is slightly negatively skewed (-1.07), indicating that more participants have higher scores, reflecting better urine function. There are 3 missing entries in the Urine Function variable.
+
+#### **Sexual Bother: **
+
+On average, participants reported a Sexual Bother score of approximately 43. However, these scores exhibit a high degree of variability, with a standard deviation of about 42, resulting in a variation coefficient of 0.97, indicating high variability relative to the mean. Quartile analysis places the first quartile at 0, the median at 25, and the third quartile at 100. The distribution is positively skewed (0.31), suggesting that more participants reported lower scores, implying significant sexual bother for some individuals. Notably, this variable has the highest level of missingness, with 8% of the total entries missing (55 entries in total). This observation could be explained by the fact that individuals are more likely to skip questions about sexual function due to feelings of embarrassment or discomfort, which are not captured in your dataset, and so the missingness can be considered MNAR (missing not at random).
+
+#### **Sexual Function:**
+
+Participants have an average Sexual Function score of approximately 25. These scores vary widely, with a standard deviation of about 27 and a variation coefficient of 1.10, indicating high variability relative to the mean. Quartile analysis positions the first quartile at 0, the median at 13.67, and the third quartile at 41.62. The distribution is positively skewed (0.99), indicating that more participants reported lower scores, suggesting challenges in sexual function for some individuals. There are 27 missing entries in the Sexual Function variable.
+
+#### **Comorbidity Index:**
+
+Based on figure 3, the most common comorbidity index among the participants is 0, accounting for 43.90% of the sample. This indicates that a significant proportion of participants in the study do not have any comorbid conditions, reflecting relatively good overall health. The second-largest group is 1, representing 26.78% of participants, suggesting the presence of one comorbid condition for this subgroup. Lastly, 14.25% of the participants have 2 comborbid conditions and 14.75% of the participants have 3+ comorbid conditions. 
+
+#### **PORPUS Utility:**
+
+The average PORPUS Utility score is approximately 0.94, signifying a relatively high health-related quality of life on average. Scores are closely clustered around the mean, with a standard deviation of 0.06 and a low variation coefficient of 0.07, indicating low variability relative to the mean. Quartile analysis positions scores ranging from 0.92 (first quartile) to 0.95 (median) to 0.99 (third quartile), showing that most participants report high PORPUS Utility scores. However, it's important to note that the distribution is negatively skewed (-2.88), indicating that some participants reported lower scores, potentially reflecting lower health-related quality of life for a subset of individuals. Notably, there are 44 missing entries in the PORPUS Utility scores. 
+
+
+```{r task4, include = FALSE}
+
+#With a skewness value of approximately -2.88 for the porpusu variable, it indicates a significant negative skew in the data. Lets try applying log transformation to make data more symmetric & meet assumptions of lm
+
+# Scatterplot of not transformed vs transformed PORPUS Utility vs. predictor variables
+plot1 <- plot(data1_task2$bowbo, data1_task2$porpusu)
+
+plot2 <- plot(data1_task2$bowbo, log(data1_task2$porpusu))
+
+plot3 <- plot(data1_task2$bowbo, sqrt(data1_task2$porpusu))
+
+# Not a very obserable difference between transformed vs non-trasnformed when comparing bowbo predictor --> all similar relationship as there isnt one that showed a more obvious linear relationship
+
+plot4 <- plot(data1_task2$bowfn, data1_task2$porpusu)
+
+plot5 <- plot(data1_task2$bowfn, log(data1_task2$porpusu))
+
+plot6 <- plot(data1_task2$bowfn, sqrt(data1_task2$porpusu))
+
+
+
+model1 <- lm(log(porpusu) ~ bowbo + bowfn + urinbo + urinfn + sexbo + sexfn + age + charlsr_categ, data = data1_task2)
+
+model2 <- lm(porpusu ~ bowbo + bowfn + urinbo + urinfn + sexbo + sexfn + age + charlsr_categ, data = data1_task2)
+
+model3 <- lm(sqrt(porpusu) ~ bowbo + bowfn + urinbo + urinfn + sexbo + sexfn + age + charlsr_categ, data = data1_task2)
+
+
+# Residual plots for each model to check independence assumption
+plot(model1, which = 1) 
+plot(model2, which = 1)
+plot(model3, which = 1)
+
+# If there is no discernible pattern in the residuals and they are randomly scattered around zero, it suggests that the independence assumption is met. However, for all models, I can slightly observe a pattern and they look similar.
+
+# Assessment of homoscedasticity --> Check if the spread of the residuals is roughly consistent across the range of the predictor variable. This is to ensure that the variance of the residuals is roughly constant for different levels of the predictor. more consistent spread of residuals --> better homoscedasticity
+
+plot(model1, which = 3)
+plot(model2, which = 3)
+plot(model3, which = 3)
+
+# I got very similar results for all 
+
+qqnorm(log(data1_task2$porpusu))
+qqline(log(data1_task2$porpusu), col = 2)  
+
+qqnorm(sqrt(data1_task2$porpusu))
+qqline(sqrt(data1_task2$porpusu), col = 2)
+
+# Since they are not nested, we cannot use anova(). However, we an use the information criterion like AIC and BIC, where lower values indicate a etter trade-off between fit and complexity.  
+
+BIC(model1)
+BIC(model2)
+BIC(model3)
+
+AIC(model1)
+AIC(model2)
+AIC(model3)
+
+# Model 3 has the lowest value for both BIC and AIC. 
+
+# Even when looking at the summary, we can see that model 3 has the highest adjusted R^2 value. However, they are all very similar and I will proceed with the log transformation. 
+
+summary(model1)
+summary(model2)
+summary(model3)
+
+
+```
+
+# Task 4 & 5:  
+
+## Linear Regression Model Findings and Interpretation: 
+
+**Null Hypothesis (H0):** There is no relationship between the predictors (bowbo, bowfn, urinbo, urinfn, sexbo, sexfn, age, charlsr_catog) and the log-transformed PORPUS Utility scores.
+
+**Alternative Hypothesis (H1):** There is a relationship between the predictors (bowbo, bowfn, urinbo, urinfn, sexbo, sexfn, age, charlsr_catog) and the log-transformed PORPUS Utility scores.
+
+
+* Intercept ( $\beta_0$): The estimated intercept is approximately -0.2388. This represents the estimated log-transformed PORPUS Utility score when all other predictor variables are zero. 
+
+
+#### Coefficients:
+
+* bowbo ( $\beta_1$): The coefficient for "bowbo" is approximately 0.0002012. This implies that for every one-unit increase in the "bowbo" score, the estimated expected log-transformed PORPUS Utility score increases by approximately 0.0002012 units, holding other predictors constant.
+
+* bowfn ($\beta_2$): The coefficient for "bowfn" is approximately 0.00112. This means that for every one-unit increase in the "bowfn" score, the estimated expected log-transformed PORPUS Utility score increases by approximately 0.00112 units, keeping other predictors constant.
+
+* urinbo ( $\beta_3$): The coefficient for "urinbo" is very small: approximately 0.00001887. This suggests that changes in "urinbo" have a minimal impact on the log-transformed PORPUS Utility score.
+
+* urinfn ( $\beta_4$): The coefficient for "urinfn" is approximately 0.0005508. For every one-unit increase in "urinfn," the estimated expected log-transformed PORPUS Utility score increases by approximately 0.0005508 units, holding other predictors constant.
+
+* sexbo ( $\beta_5$): The coefficient for "sexbo" is approximately 0.00003428, signifying a positive relationship. A one-unit increase in "sexbo" leads to an estimated increase of approximately 0.00003428 units in the log-transformed PORPUS Utility score, with other predictors held constant.
+
+* sexfn ( $\beta_6$): The coefficient for "sexfn" is approximately 0.0008862, signifying a positive relationship. For every one-unit increase in "sexfn," the estimated expected log-transformed PORPUS Utility score increases by approximately 0.0008862 units, keeping other predictors constant
+
+* age ( $\beta_7$): The coefficient for "age" is approximately -0.00001977. This suggests that for every one-unit increase in age, the estimated expected log-transformed PORPUS Utility score decreases by approximately 0.00001977 units, holding other predictors constant.
+
+* charlsr_categ1( $\beta_8$): The coefficient is 0.002967. For individuals with a comorbidity index of 1, the estimated expected log-transformed PORPUS Utility score increases by approximately 0.002967 units, compared to those with a comorbidity index of 0 (the reference category), holding other predictors constant.
+
+* charlsr_categ2 ( $\beta_9$): The coefficient is approximately -0.005722. For individuals with a comorbidity index of 2, the estimated expected log-transformed PORPUS Utility score decreases by approximately 0.005722 units, compared to those with a comorbidity index of 0 (the reference category), holding other predictors constant. This implies that having a comorbidity index of 2 is associated with a slight decrease in the expected health utility score.
+
+
+* charlsr_categ3+ ( $\beta_9$): The coefficient is approximately -0.02876. For individuals with a comorbidity index of 3 or higher, the estimated expected log-transformed PORPUS Utility score decreases by approximately 0.02876 units, compared to those with a comorbidity index of 0 (the reference category), holding other predictors constant. This indicates that having a comorbidity index of 3 or higher is associated with a notable decrease in the expected health utility score.
+
+#### P-values:
+
+> The p-values associated with each coefficient test the null hypothesis that the respective coefficient is equal to zero (H0:   $\beta_i$ = 0). If the p-value is less than the chosen significance level (commonly 0.05), we reject the null hypothesis.
+
+Based on the p-values:
+Bowel Bother (bowbo), Bowel Function (bowfn), Urinary Function (urinfn), Sexual Function (sexfn), Comorbidity Index 1 (charlsr_categ1), and Comorbidity Index 3+ (charlsr_categ3+) have p-values less than 0.05, indicating that they are statistically significant predictors of the log-transformed PORPUS Utility score.
+
+Urinary Bother (urinbo), Sexual Bother (sexbo), Age (age), and Comorbidity Index 2 (charlsr_categ2) have p-values greater than 0.05, suggesting that they are not statistically significant predictors.
+
+
+```{r task6, include= FALSE }
+
+# Define the patient characteristics
+new <- data.frame(
+  urinfn = 85,
+  urinbo = 70,
+  bowfn = 83.75,
+  bowbo = 100,
+  sexfn = 9.375,
+  sexbo = 35,
+  charlsr_categ = "3+",
+  age = 68
+)
+
+# Predict the mean expected health utility and obtain a 95% confidence interval
+prediction1 <- predict(model1, newdata = new, interval = "confidence", level = 0.95,  data = data1_task2)
+
+prediction1
+
+# Convert the log-transformed prediction to the original scale
+exp(prediction1)
+
+
+```
+
+
+# Task 6 
+
+## Prediction for a new patient 
+The predicted mean expected health utility for the patient with the specified characteristics is approximately 0.9074. The corresponding 95% confidence interval for this prediction, represented by the lower and upper bounds of 0.922023 and 0.8929, respectively, provides a range within which we can reasonably expect the true mean expected health utility to fall. In other words, if we were to conduct this analysis multiple times with different samples of patients who share the same characteristics, we would anticipate that about 95% of those intervals calculated would contain the true population parameter, which is the mean expected health utility for patients with these specific attributes.
+
+
+# Task 7
+
+## Discuss different issues around the appropriateness of linear regression for this application.
+* In this study, we employed linear regression to model the relationship between PORPUS utility and various predictor variables in prostate cancer patients. While linear regression is a widely used statistical technique, its appropriateness for this application is subject to certain considerations.
+
+* Firstly, linear regression assumes a linear relationship between the dependent and independent variables. In the context of Porpusu, this assumption may not always hold true, as the relationship can be more complex. To address this, we should explore the linearity assumption through diagnostic plots and consider alternative models if needed. . I have conducted a Shapiro-Wilk test for PORPUSU, which yielded a p-value of less than 0.05 (2.2e-16), indicating that the distribution significantly departs from normality. To further investigate, I performed QQ plots for PORPUS Utility in its original form, the selected log-transformed form, and square root-transformed form. These plots show that not all data points fall within the Q-line, suggesting that the data may not follow a normal distribution. 
+
+```{r q1task7, include = FALSE}
+shapiro.test(data1_task2$porpusu)
+
+library(stats)
+
+#install.packages("car")
+
+library("car")
+```
+
+
+```{r q1task7output, echo= FALSE}
+# Create a QQ plot for PORPUS Utility
+qqPlot(data1_task2$porpusu, main = "QQ Plot for PORPUS Utility", ylab = "PORPUSU")
+qqPlot(log(data1_task2$porpusu), main = "QQ Plot for Log-PORPUS Utility", ylab = "Log-PORPUSU")
+qqPlot(sqrt(data1_task2$porpusu), main = "QQ Plot for Sqrt-PORPUS Utility", ylab = "Sqrt-PORPUSU")
+```
+
+
+* Secondly, linear regression assumes that the residuals are normally distributed and have constant variance (homoscedasticity). Violations of these assumptions can lead to biased or inefficient parameter estimates. It is crucial to check for homoscedasticity in the residuals and apply transformations or consider different models if necessary. In this assignment, I tried different transformations and concluded that log may be the best option for the negative skewness of the PORPUSU variable.
+
+* Finally, issues such as multicollinearity, outliers, and missing data can affect the reliability of linear regression results. Using techniques like VIF or consider reducing the number of predictors if necessary for multicollinearity and proper handling of missing values are essential steps in mitigating these issues.
+
+
+
+
+
+
+ 
+
+
+***
+
+
+
+# Question 2
+
+
+In question 2, we turn our attention to predicting the risk of developing acute graft-versus-host disease (GvHD) in leukemia patients who have received nondepleted allogeneic bone marrow transplants. GvHD is a common complication for allogeneic hematopoietic stem cell transplants, as it arises when the immune cells from the donor graft perceive the recipient's tissues as foreign and mount an attack (Socié, 2014).
+
+One of the variables of interest in our investigation is the "index," a numeric variable representing mixed epidermal cell-lymphocyte reactions (MLR). MLR is rooted in the observation that when normal peripheral blood leukocytes from different donors are combined, they stimulate each other to proliferate. This index holds potential as a predictor of GvHD risk (Zhou, 2014).
+
+Additionally, we consider other variables such as recipient age (rcpage), donor age (donage), leukemia type (type), and whether the donor has been pregnant (preg). GvHD, a binary outcome variable (0 for absence, 1 for presence), serves as our primary focus. Through logistic regression analysis, we aim to gain insights into the factors influencing the occurrence of GvHD. 
+
+
+
+```{r q2task1, include = FALSE}
+
+# Read second dataset into a dataframe using read.csv function and save the dataset as graft
+graft <- read.csv("graft_host.csv")
+
+# Take a deeper look at the dataset's structure to understand its components using glimpse()
+glimpse(graft)  
+
+# We have 37 rows and 9 columns and all variables have a valid data type, integer or double class. 
+
+# Select the variables that we are interested in 
+graft_select <- select(graft, pnr, rcpage, donage, type, preg, index, gvhd, time, dead)
+
+
+# Employ same method used above to deal with missing values 
+any(is.na(graft_select))
+
+complete.cases(graft_select)
+
+# I skimmed through the dataset, which is easy to skim through because its relatively small and no missing values or unique values  seem to be there. Therefore, no need for cleaning or handling missing data.
+
+```
+
+```{r q2task2, include = FALSE}
+# Continuous variables can be used as they are, the continuous (rcpage, donage, index, time). Convert the binary categorical variables (gvhd, preg, dead) and the categorical variable type to factor. 
+
+# Type can be converted to factor with labels.
+
+# Encode categorical variables as factors  
+graft_recode <- graft_select %>%
+  mutate_at(vars(type, preg, gvhd, dead), as.factor)
+
+# Check the structure of the dataframe to confirm the changes
+glimpse(graft_recode)
+
+
+
+```
+
+
+```{r q2task3, include = FALSE}
+
+
+# Repeat the same method used in question 1 for description of the data (summary stats in tables and graphs) 
+
+basic_eda2 <- function(data)
+{
+ # Remove patientID column
+  data <- data[, colnames(data) != "pnr"]
+  
+  print(status(data))
+  print(profiling_num(data))
+  plot_num(data, path_out = "./q2")
+  describe(data)
+}
+
+basic_eda2(graft_recode)
+
+# CHeck min and max by using summary() function
+summary(graft_recode)
+
+
+```
+
+# Task 1, 2, & 3
+
+![Visualization of the Four Continuous Variables. "Rcpage" corresponds to the age of the recipient (in years); "donage" corresponds to the age of the donor (in years); "index" refers to the index of mixed epidermal cell-leukocyte reaction; "time" is follow-up time in days. Each histogram represents the values of the specific variables along the x-axis, with a default bin size of 10. The y-axis denotes the counts or frequency of occurrences. The dataset consists of 37 patients. ](C:/Users/Leen/Desktop/Mbiotech/BTC1877/q2/histograms.png)
+
+
+
+
+
+```{r q2task3type, echo = FALSE}
+# Create the histogram with reported frequencies of the different types of disease 
+# Round the percentages 
+
+library(ggplot2)
+
+ggplot(graft_recode, aes(x = factor(type), fill = type)) +
+  geom_bar() +
+  geom_text(stat = 'count', aes(label = paste0(after_stat(count), " (", scales::percent(round(prop.table(after_stat(count)), 2)), ")")), vjust = -0.5) +
+  labs(x = "Type of Leukemia", y = "Frequency") +
+  scale_fill_brewer(palette = "Set2", labels = c("1" = "AML", "2" = "ALL", "3" = "CML")) +
+  theme_minimal() +
+  labs(fill = "Type")
+
+```
+**Figure 5: Frequency Distribution of the Types of Leukemia.** The type of leukemia, with "1" for AML (Acute Myeloid Leukemia), "2" for ALL (Acute Lymphoblastic Leukemia), and "3" for CML (Chronic Myeloid Leukemia).
+
+The distribution of leukemia types reveals that ALL is the most prevalent subtype, accounting for 43% of cases, followed by AML at 30%, and CML at 27%.
+
+
+
+```{r q2task3preg, echo = FALSE}
+# Create the histogram with reported frequencies of those pregnant or not 
+# Round the percentages 
+
+library(ggplot2)
+
+ggplot(graft_recode, aes(x = factor(preg), fill = preg)) +
+  geom_bar() +
+  geom_text(stat = 'count', aes(label = paste0(after_stat(count), " (", scales::percent(round(prop.table(after_stat(count)), 2)), ")")), vjust = -0.5) +
+  labs(x = "Pregnancy of Donor", y = "Frequency") +
+  scale_fill_brewer(palette = "Set2", labels = c("0" = "NO", "1" = "YES")) +
+  theme_minimal() + 
+  labs(fill = "Pregnant") # the legend title will be preg if labs argument is not added
+
+```
+**Figure 6: Frequency Distribution of the Donor's Pregnancy History** The pregnancy variable is categorically encoded as 0 for "not pregnant" and 1 for "have been pregnant before". 
+
+Based on figure 6, 27% of participants experienced pregnancy, while the majority (73%) did not.
+
+
+
+
+```{r q2task3gvhd, echo = FALSE}
+# Create the histogram with reported frequencies of graft-versus-host disease
+# Round the percentages 
+
+library(ggplot2)
+
+ggplot(graft_recode, aes(x = factor(gvhd), fill = gvhd)) +
+  geom_bar() +
+  geom_text(stat = 'count', aes(label = paste0(after_stat(count), " (", scales::percent(round(prop.table(after_stat(count)), 2)), ")")), vjust = -0.5) +
+  labs(x = "Graft-versus-host Disease (GvHD)", y = "Frequency") +
+  scale_fill_brewer(palette = "Set2", labels = c("0" = "NO", "1" = "YES")) +
+  theme_minimal() + 
+  labs(fill = "Disease Presence") 
+```
+**Figure 7: Frequency Distribution of Graft versus Host Disease** The GvHD variable is categorically coded as "0" for its absence and "1" for its presence.
+
+Based on figure 7, 46% of participants exhibited graft versus host disease, indicating a significant occurrence, while 54% did not manifest this condition.
+
+
+
+```{r q2task3dead, echo = FALSE}
+# Create the histogram with reported frequencies of graft-versus-host disease
+# Round the percentages 
+
+library(ggplot2)
+
+ggplot(graft_recode, aes(x = factor(dead), fill = dead)) +
+  geom_bar() +
+  geom_text(stat = 'count', aes(label = paste0(after_stat(count), " (", scales::percent(round(prop.table(after_stat(count)), 2)), ")")), vjust = -0.5) +
+  labs(x = "Death", y = "Frequency") +
+  scale_fill_brewer(palette = "Set2", labels = c("0" = "NO", "1" = "YES")) +
+  theme_minimal() + 
+  labs(fill = "Dead") 
+
+```
+
+**Figure 8: Frequency Distribution of Mortality. ** The death variable captures the vital outcome of patients, with "0" signifying survival and "1" representing mortality.
+
+Based on figure 8, 49% of study participants died, while the remaining 51% survived.
+
+```{r q2table1, echo=FALSE}
+library(knitr)
+table2 <- profiling_num(graft_recode) # will automatically do the profiling for only the continuous variables
+
+# remove the patient number row again because profiling_num will regard it as cont.
+table2 <- table2[table2$variable != "pnr", ]
+
+table2_clean <- table2 %>%
+  select(
+    Variable = variable,
+    Mean = mean,
+    `Standard Dev.` = std_dev,
+    `Variation Coef.` = variation_coef,
+    `1st Quartile` = p_25,
+    Median = p_50,
+    `3rd Quartile` = p_75,
+    Skewness = skewness
+  ) %>% 
+  mutate(
+    Variable = case_when(
+      Variable == "rcpage" ~ "Recipient Age (Years)",
+      Variable == "donage" ~ "Donor Age (Years)",
+      Variable == "type" ~ "Type",
+      Variable == "preg" ~ "Pregnancy History",
+      Variable == "index" ~ "MLR Index",
+      Variable == "gvhd" ~ "GvHD",
+      Variable == "time" ~ "Follow-up Time (Days)",
+      Variable == "dead" ~ "Death",
+      TRUE ~ Variable
+    ),
+    Mean = round(Mean, 2),
+    `Standard Dev.` = round(`Standard Dev.`, 2),
+    `Variation Coef.` = round(`Variation Coef.`, 2),
+    `1st Quartile` = round(`1st Quartile`, 2),
+    Median = round(Median, 2),
+    `3rd Quartile` = round(`3rd Quartile`, 2),
+    Skewness = round(Skewness, 2)
+  )
+
+
+# or i could add the descriptive stats myself by calculating each using basic R functions
+
+# Remove row numbering
+rownames(table2_clean) <- NULL
+
+# Use kablr from knitr package again to create a clean table 
+kable(table2_clean, caption = "Descriptive Statistics for Key Variables")
+```
+
+
+## Descriptive Statistics Insights
+
+#### **Recipient Age: **
+The mean recipient age is 25.43 years, with a standard deviation of 7.50 years. The coefficient of variation is relatively low at 0.30, indicating moderate variability. The distribution is slightly right-skewed (skewness = 0.68), and most recipients fall within the 20 to 29-year age range.
+
+#### **Donor Age: **
+Donor age exhibits similar characteristics to recipient age. The mean donor age is 25.81 years, with a standard deviation of 7.84 years. The coefficient of variation is 0.30, indicating moderate variability. The distribution is slightly right-skewed (skewness = 0.54), and most donors are within the 20 to 34-year age range.
+
+
+#### **MLR Index:** 
+The mean MLR Index is 2.56, but it stands out with a relatively high standard deviation of 2.23 and a high coefficient of variation (0.87), suggesting substantial variability in the data. The distribution is strongly right-skewed (skewness = 1.69), indicating potential outliers on the higher end. Figure 4 further confirms this with an individual having an MLR Index in the 8.5-10 range, highlighting the need for attention to potential outliers in this variable.
+
+#### **Follow-up Time:** 
+The mean follow-up time is 669.78 days, with a standard deviation of 483.72 days. The coefficient of variation is moderate at 0.72, indicating moderate variability. The distribution is slightly right-skewed (skewness = 0.20), with most follow-up times falling within the lower range. However, some longer follow-up times are present in the data.
+
+
+```{r q2task5, include=FALSE}
+
+glmodel <- glm(gvhd ~ rcpage + index + type,  data = graft_recode, family = binomial)
+
+summary(glmodel)
+
+```
+
+# Task 4 & 5 
+
+## Logistic Regression Model Findings and Interpretation 
+
+**Null Hypothesis (H0):** There is no relationship between the predictors (rcpage, index, type) and the occurrence of GvHD.
+
+**Alternative Hypothesis (H1):** There is a relationship between the predictors (rcpage, index, type) and the occurrence of GvHD.
+
+* Intercept ($\beta_0$): The estimated log-odds of developing GvHD when all other predictor variables are zero is approximately -5.11502.
+
+#### Coefficients:
+
+* rcpage (Recipient Age, $\beta_1$): For each one-unit increase in recipient age (rcpage), the estimated log-odds of developing GvHD increase by approximately 0.13061, holding other predictors constant. This variable is statistically significant (p = 0.04467).
+
+* index (Mixed Epidermal Cell-Lymphocyte Reactions, $\beta_2$): For each one-unit increase in the index, the estimated log-odds of developing GvHD increase by approximately 0.61024, keeping other predictors constant. This variable is marginally significant (p = 0.06118).
+
+* type2 (Leukemia Type 2 - ALL, $\beta_3$): This coefficient represents the change in log-odds of GvHD risk for patients with leukemia type 2 (ALL) compared to leukemia type 1 (AML). However, it is not statistically significant (p = 0.63744), suggesting that the difference in GvHD risk between these two leukemia types is not significant.
+
+* type3 (Leukemia Type 3 - CML, $\beta_4$): This coefficient represents the change in log-odds of GvHD risk for patients with leukemia type 3 (CML) compared to leukemia type 1 (AML). Like type2, it is not statistically significant (p = 0.35741), indicating that the difference in GvHD risk between CML and AML is not significant.
+
+#### P-values:
+
+Recipient age is a statistically significant predictor of GvHD risk, with older recipients having higher odds of developing GvHD. The index of MLR variable shows marginal significance, suggesting that it may also influence GvHD risk, but further investigation may be needed to confirm its significance. Leukemia types 2 and 3 do not significantly impact GvHD risk in this analysis.
+
+
+```{r q2task6, include= FALSE}
+
+# Convert the beta coefficients of all the predictors to Odds Ratios
+exp(glmodel$coefficients)
+
+#get the confidence intervals
+round(exp(confint(glmodel)),2)
+
+```
+
+# Task 6
+
+## Odd Ratios and their Interpretation 
+* Recipient Age (rcpage): The odds ratio for recipient age is approximately 1.14. Therefore, since the odds ratio is greater than 1, this means that for each one-year increase in recipient age, the odds of developing GvHD are approximately 14% higher for patients with higher ages compared to younger patients, holding other predictors constant. In addition, 95% of the time, we expect the odds of developing GvHD to change within a range of approximately 1.01 to 1.32 for each one-year increase in recipient age.
+
+* Mixed Epidermal Cell-Lymphocyte Reactions (index): The odds ratio for the index is approximately 1.84. Thus, as the odds ratio is greater than 1, this indicates that for each one-unit increase in the index, the odds of developing GvHD are approximately 84% higher for patients with higher mixed epidermal cell-lymphocyte reactions compared to those with lower reactions, while keeping other predictors constant. Thus, 95% of the time, we anticipate the odds of developing GvHD to change within a range of approximately 1.10 to 3.97 for each one-unit increase in the index.
+
+* Leukemia Type 2 (ALL) vs. Leukemia Type 1 (AML): The odds ratio for leukemia type 2 (ALL) compared to leukemia type 1 (AML) is approximately 0.59. However, since the odds ratio is less than 1, this means that the odds of developing GvHD are approximately 41% lower for patients with leukemia type 2 (ALL) compared to patients with leukemia type 1 (AML), but this difference is not statistically significant. In addition, 95% of the time, we expect the odds of developing GvHD to change within a range of approximately 0.06 to 5.49 for patients with leukemia type 2 (ALL) compared to patients with leukemia type 1 (AML), 
+
+* Leukemia Type 3 (CML) vs. Leukemia Type 1 (AML): The odds ratio for leukemia type 3 (CML) compared to leukemia type 1 (AML) is approximately 2.86. Since the odds ratio is greater than 1, this suggests that the odds of developing GvHD are approximately 186% higher for patients with leukemia type 3 (CML) compared to patients with leukemia type 1 (AML). However, it's important to note that this difference is not statistically significant.95% of the time, we expect the odds of developing GvHD to change within a range of approximately 0.32 to 32.90 for patients with leukemia type 3 (CML) compared to patients with leukemia type 1 (AML).
+
+
+# Task 7
+
+## Derive mathematically the risk of developing graft-vs-host disease for a patient with type 2 leukemia and index = 4. 
+
+* \(\beta_0\) (Intercept) = -5.11502
+* \(\beta_2\) (Index) = 0.61024
+* \(\beta_3\) (Type 2) = -0.52425
+* \(\beta_4\) (Recipient Age) = 0.13061
+* Mean recipient age is around 25, so will select 25 years.
+
+$$
+\hat{p}\ = \frac{exp(\hat{\beta_0} + \hat {\beta_1}X + \ldots) } {1 + exp(\hat{\beta_0} + \hat {\beta_1}X +\ldots)} = \frac{exp(-5.11502 + 0.61024 \cdot 4 + -0.52425\cdot 1 + 0.13061(25)} {1+ exp(-5.11502 + 0.61024 \cdot 4 + -0.52425\cdot 1 + 0.13061(25)} 
+$$
+
+```{r q2task7, include = FALSE}
+
+# Calculate the estimated probability
+probability <- exp(-5.11502 + (0.61024 * 4) + (- 0.52425 * 1) + (0.13061 * 25)) / (1 + exp(-5.11502 + (0.61024 * 4) + (- 0.52425 * 1) + (0.13061 * 25)))
+
+```
+
+
+The estimated probability of developing graft-vs-host disease (GvHD) for a patient with Type 2 leukemia, an index of 4, and a recipient age of 25 mathematically is approximately `r sprintf("%.2f", probability)`. 
+
+
+
+```{r q2task8, include= FALSE}
+# Create a new data frame for the prediction
+new_data <- data.frame( rcpage = 25, index = 4, type = "2")
+
+# Use the predict function to obtain the estimated probability
+predicted_probability <- predict(glmodel, newdata = new_data, type = "response")
+
+# Display the estimated probability
+predicted_probability
+```
+
+# Task 8
+Using the predict function in R, the estimated probability for developing GvHD for an an individual who is 25 years old, with type 2 Leukemia (ALL), and MLR index of 4 is also `r sprintf("%.2f", predicted_probability)`.
+
+# Task 9 
+
+```{r q2task9, echo = FALSE}
+
+library(ggplot2)
+
+# Create a range of values for the "index" variable
+index_values <- seq(0, 10, by = 0.1)
+
+# Create a data frame with the covariate values for prediction
+# Using expand.grid is more convenient that data.frame because it automates the process of generating all possible combinations of input vectors.
+# We'll set recipient age to 25
+prediction_data <- expand.grid(index = index_values, type = c("1", "2", "3"), rcpage = 25)
+
+# Use the predict function to obtain predicted probabilities
+prediction_data$probability <- predict(glmodel, newdata = prediction_data, type = "response")
+
+
+# Create a ggplot object for the plot
+ggplot(prediction_data, aes(x = index, y = probability, color = factor(type))) +
+  geom_line() +
+  labs(
+    title = "Risk of Graft-vs-Host Disease (GvHD) by MLR Index for Leukemia Types",
+    x = "MLR Index",
+    y = "GvHD Probability",
+    color = "Leukemia Type"
+  ) +
+  scale_color_manual(
+    values = c("royalblue", "lightpink", "forestgreen"),
+    labels = c("AML", "ALL", "CML")
+  ) +
+  theme_minimal()
+```
+**Figure 9: Risk of Graft-vs-Host Disease (GvHD) by MLR Index for Leukemia Types.** The plot illustrates the relationship between the MLR Index and the probability of developing GvHD for different types of leukemia (AML, ALL, and CML). The x-axis represents the MLR Index, while the y-axis represents the GvHD probability.
+
+# Task 10
+### A researcher is also interested in predicting the risk of death at 2 years, using these data. A junior analyst suggested using logistic regression with death as the response variable for this analysis. Do you agree or disagree and why? Is your answer the same for the 1-year risk of death?
+
+Predicting the risk of death at 2 years appears to be a well-suited approach, given the average follow-up time of approximately 2 years (665 days). This choice aligns with the research objective of modeling mortality within this time frame. However, it's crucial to select relevant predictor variables and ensure data quality, especially considering that the risk of death is nearly 50%, indicating a balanced dataset in terms of outcomes. Evaluating the model's performance and clinically interpreting coefficients and odds ratios will be essential for understanding its predictive capabilities in the context of 2-year mortality.
+
+Predicting death at 1 year is also a valid option but comes with considerations. While it may align with certain research questions focused on shorter-term outcomes, researchers should assess data availability, as the 2-year average follow-up time results in a dataset with a substantial number of deaths within the first year. Careful selection of predictors that align with shorter-term outcomes and rigorous model validation will be necessary. Both time frames offer valuable insights, but the choice should reflect the research goals and the clinical relevance of the selected prediction.
+
+
+### References 
+
+
+Socié, G., & Ritz, J. (2014). Current issues in chronic graft-versus-host disease. Blood, 124(3), 374–384.[https://doi.org/10.1182/blood-2014-01-514752](https://doi.org/10.1182/blood-2014-01-514752)
+
+Zhou, J., He, W., Luo, G., & Wu, J. (2014). Mixed lymphocyte reaction induced by multiple alloantigens and the role for IL-10 in proliferation inhibition. Burns & trauma, 2(1), 24–28. [https://doi.org/10.4103/2321-3868.126088](https://doi.org/10.4103/2321-3868.126088)
