@@ -9,7 +9,7 @@ The projects are primarily relevant to data science in health, where I attempt t
 
 If you have any questions, please email me at leen.madani@mail.utoronto.ca
 
-
+**************
 
 Solo Project (Real Data Analysis)
 
